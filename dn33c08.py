@@ -1,10 +1,6 @@
 '''
 Eletechsup DN33C08 Pi Pico 2040 "PLC" expansion board demo
 
-- Pin mappings from DN33C08 video on YouTube
-- TODO: Add support for 4 digit 7-segment display
-- TODO: Get formal board documentation from Eletechsup
-
 '''
 
 import time
@@ -80,11 +76,10 @@ def main():
 def pin_demos():
   # Set interrupts on input pins
   for input_no, pin in enumerate(inputs):
-    if input_no == 5:
-      pin.irq(
-        lambda pin, input_no=input_no: print(f"Input pin {input_no} {pin} {'HIGH' if pin.value() else 'LOW'}!"),
-        trigger=Pin.IRQ_FALLING # n.b. only IRQ_{RISING,FALLING} are implemented on rp2040
-      )
+    pin.irq(
+      lambda pin, input_no=input_no: print(f"Input pin {input_no} {pin} {'HIGH' if pin.value() else 'LOW'}!"),
+      trigger=Pin.IRQ_FALLING # n.b. only IRQ_{RISING,FALLING} are implemented on rp2040
+    )
   
   def button_handler(pin, button_no):
     print(f"Button pin {button_no} {pin} {'HIGH' if pin.value() else 'LOW'}!"),
@@ -196,8 +191,8 @@ def shift_registers():
 
   pio = False
   pio = True
-  dma = True
   dma = False
+  dma = True
 
   print(f"pio={pio} dma={dma}")
 
@@ -205,30 +200,36 @@ def shift_registers():
   # SR_CLK   = 10 #SR0_SRCLK
   # SR_DATA  = 11 #SR0_SER
   if pio:
-    pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(SR_DATA))
+    pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(SR_DATA), Pin(25))
   else:
-    pins = (inputs[7], inputs[6], inputs[5])
-  #pins = (inputs[7], inputs[6], inputs[5])
+    pins = (inputs[7], inputs[6], inputs[5], Pin(25))
+  #pins = (inputs[7], inputs[6], inputs[5], Pin(25)) # leds only
+  #pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(25), Pin(4)) # flash data
   sm0 = StateMachine(
     0,
     run_leds,
-    freq=1908, #1250000, #1908,
-    set_base=Pin(25), # led #pins[0], # latch
+    freq=125000, #1908,
+    set_base=pins[3], # led #pins[0], # latch
     sideset_base=pins[0], 
     out_base=pins[2], 
   ) 
+  sm0.restart()
   def irq_handler(sm):
     global dma_handler
-    print(f"PIO IRQ: {sm.irq().flags()} put:{['{:012b}'.format(w) for w in bitarray]}")
-    sm.put(bitarray)
-    return
-    if dma_handler:
-      sm.put(dma_handler.buffer)
-      return
-      dma_handler.feed_dma()
-      print(f"\tAfter IRQ dma feed: stalled: {is_pio_stalled(0,0)}")
+    if dma:
+      if dma_handler:
+        print(f"PIO IRQ: {sm.irq().flags()} put:{['{:012b}'.format(w) for w in dma_handler.buffer]}")
+        #sm.put(dma_handler.buffer)
+        #return
+        dma_handler.feed_dma()
+        #print(f"\tAfter IRQ dma feed: stalled: {is_pio_stalled(0,0)}")
+      else:
+        print(f"DMA handler not set up yet.")
     else:
-      print(f"DMA handler not set up yet.")
+      print(f"PIO IRQ: {sm.irq().flags()} put:{['{:012b}'.format(w) for w in bitarray]}")
+      sm.put(bitarray)
+      return
+   
   # Have MOV x, STATUS trigger when TX FIFO has < 1 items left
   set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=2)
   sm0.irq(handler=irq_handler)
@@ -255,20 +256,30 @@ def shift_registers():
     buffer = [ 0xfffff000 for i in range(4) ]
     buffer = [ 0xfc0 for i in range(4) ]
     buffer = [ 0xff0 for i in range(4) ]
+    buffer = [ 0x000, 0xffffffff, 0x00000000, 0xffffffff, ] # 16 * 4 = 64 bits; 2 * 4 = 8 bytes; 2**3 = 8 addrs byte-wise; 
+    buffer = [ 0, 0, 0, 0x000001ff]
+    buffer = [ 0xffffffff, 0xffffffff, 0xffffffff, 0 ]
+    buffer = [ 0, 0x000f,  0, 0] 
+    buffer = [ 0, 0, 0, 1, ]
+    buffer = [ 0, 0, 1, 0, ]
+    buffer = [ 1, 0, 0, 0, ]
+    buffer = [ 0, (1 << 0), 0, 0, ]
     buffer = [ d | c for d, c in zip(digits, chars[:4]) ]
+    #arr = bytearray([0x00] * 4 * 3 + [ 0x00, 0x00, 0x01, 0xff ] )
     arr = array('H', buffer)
+    print(arr)
+    print(len(arr))
+    bitarray = arr
     if pio and dma:
       start = time.ticks_ms()
       while time.ticks_diff(time.ticks_ms(), start) < 100:
-        dma_display(array('H', buffer))
+        dma_display(bitarray)
         #for bits in buffer:
         #    sm0.put(bits)
         break
-      time.sleep_ms(1000)
+      time.sleep_ms(250)
     else:
-      # TODO: move shift register/charlieplexing code to PIO
       start = time.ticks_ms()
-      bitarray = arr
       while time.ticks_diff(time.ticks_ms(), start) < 500:
           if pio:
             #sm0.put(arr)
@@ -294,8 +305,11 @@ DMA_READ_ADDR_OFFSET = 0x0
 DMA_WRITE_ADDR_OFFSET = 0x4
 DMA_TRANS_COUNT_OFFSET = 0x8
 DMA_CTRL_TRIG_OFFSET = 0xc
+DMA_AL1_CTRL_OFFSET = 0x10
+DMA_CHAN_ABORT_OFFSET = 0x444
 
 # DMA CTRL register bit offset
+DMA_CTRL_BUSY = 24 # 1 = dma is busy, do not trigger
 DMA_CTRL_TREQ_SEL = 15  # 6 bits, 20-15. DMA DREQ to use to trigger transfers
 DMA_CTRL_CHAIN_TO = 11 # 4 bits, 14-11. DMA channel # to chain to, set to self to disable chaining
 DMA_CTRL_RING_SEL = 10 # 0 = read addresses wrap, 1 = write addresses wrap
@@ -338,10 +352,15 @@ PIO1_RXF0 = PIO1_BASE + PIO_RXF0_OFFSET
 from machine import mem32
 
 def configure_dma(channel, read_addr, write_addr, transfer_count, ctrl):
-  mem32[channel + DMA_READ_ADDR_OFFSET] = read_addr
-  mem32[channel + DMA_WRITE_ADDR_OFFSET] = write_addr
-  mem32[channel + DMA_TRANS_COUNT_OFFSET] = transfer_count 
-  mem32[channel + DMA_CTRL_TRIG_OFFSET] = ctrl
+  mem32[DMA_CHANNELS[channel] + DMA_READ_ADDR_OFFSET] = read_addr
+  mem32[DMA_CHANNELS[channel] + DMA_WRITE_ADDR_OFFSET] = write_addr
+  mem32[DMA_CHANNELS[channel] + DMA_TRANS_COUNT_OFFSET] = transfer_count 
+  mem32[DMA_CHANNELS[channel] + DMA_CTRL_TRIG_OFFSET] = ctrl
+
+def reset_dma_ctrl(channel):
+  #mem32[channel + DMA_TRANS_COUNT_OFFSET] = 0
+  mem32[DMA_CHANNELS[channel] + DMA_AL1_CTRL_OFFSET ] &= 0 # reset CTRL without re-triggering using Alias1
+
 
 def make_dma_ctrl(
   channel,
@@ -351,48 +370,103 @@ def make_dma_ctrl(
   incr_write,
   ring_size_bits,
   wrap_write_addrs,
+  data_size=2,
   ):
   config = 0
   config |= (treq & 0x3f) << DMA_CTRL_TREQ_SEL # set treq
   config |= (channel & 0xf) << DMA_CTRL_CHAIN_TO # set chain to self to disable chaining
   config |= int(wrap_write_addrs) << DMA_CTRL_RING_SEL # set ring r/w to wrap read addrs
-  config |= (ring_size_bits & 7) << DMA_CTRL_RING_SIZE # set ring size in bits to wrap at 4 reads (not bytes)
-  config |= 2 << DMA_CTRL_DATA_SIZE # set data size
+  config |= (ring_size_bits & 0xf) << DMA_CTRL_RING_SIZE # set ring size in bits to wrap at (in bytes)
+  config |= data_size << DMA_CTRL_DATA_SIZE # set data size, 0 = 1 byte, 1 = 2 bytes, 2 = 4 bytes
   config |= int(incr_write) << DMA_CTRL_INCR_WRITE # set no incr write
   config |= int(incr_read) << DMA_CTRL_INCR_READ # set incr read
   config |= int(enable) << DMA_CTRL_EN # enable
 
   return config
 
+def dma_ctrl(channel):
+  return mem32[DMA_CHANNELS[channel] + DMA_CTRL_TRIG_OFFSET]
+
+def dma_busy(channel):
+  return bool((dma_ctrl(channel) & (1 << DMA_CTRL_BUSY)))
+
+def pause_dma(channel):
+  mem32[DMA_CHANNELS[channel] + DMA_CTRL_TRIG_OFFSET] &= ~(1 << DMA_CTRL_EN)
+  
+SUBSYSTEM_RESET_BASE = 0x4000c000
+SUBSYSTEM_RESET_OFFSET = 0
+SUBSYSTEM_RESET_DONE_OFFSET = 8 
+
+SUBSYSTEM_RESET = SUBSYSTEM_RESET_BASE + SUBSYSTEM_RESET_OFFSET
+SUBSYSTEM_RESET_DONE = SUBSYSTEM_RESET_BASE + SUBSYSTEM_RESET_DONE_OFFSET
+
+SUBSYSTEM_RESET_BIT_DMA = 2
+SUBSYSTEM_RESET_BIT_PIO0 = 10
+SUBSYSTEM_RESET_BIT_PIO1 = 11
+
+def reset_dma_subsystem():
+  print("Resetting DMA subsystem...")
+  dma_mask = 1 << SUBSYSTEM_RESET_BIT_DMA
+  mem32[SUBSYSTEM_RESET] |= dma_mask
+  while mem32[SUBSYSTEM_RESET_DONE] & dma_mask:
+    print(f"Waiting for DMA subsystem to reset... {mem32[SUBSYSTEM_RESET_DONE]:08x}")
+
+DMA_ABORT_WAIT_LIMIT = 20
+def abort_dma(channel):
+  chan_abort_reg = DMA_BASE + DMA_CHAN_ABORT_OFFSET
+  if dma_busy(channel):
+    print(f"Aborting DMA channel {channel}...")
+    pause_dma(channel)
+    mem32[chan_abort_reg] |= (1 << channel)
+    counter = 0
+    while dma_busy(channel):
+      if counter > DMA_ABORT_WAIT_LIMIT:
+        reset_dma_subsystem()
+        break
+      print(f"Waiting for DMA channel {channel} to not be busy {dma_ctrl(channel):08x}, chan_abort:{mem32[chan_abort_reg]:08x}...")
+      time.sleep_ms(100)
+      mem32[chan_abort_reg] |= (1 << channel)
+      counter += 1
+  return mem32[chan_abort_reg]
+
 class Dma(object):
   def __init__(self, channel, buffer):
     self.buffer = buffer
     self.channel = channel
     print(f"Setting up dma with buffer: {buffer}")
+    print(f"\tDMA is {'BUSY' if dma_busy(self.channel) else 'not busy'} during setup. ctrl reg = 0x{dma_ctrl(self.channel):08x}")
+    #reset_dma_ctrl(self.channel)
+    abort_dma(self.channel)
+    #print(f"CHAN_ABORT: {abort_dma(0):08x}")
+      #abort_dma(self.channel)
   def feed_dma(self):
-    print(f"Feeding DMA... stalled: {is_pio_stalled(0,0)}")
+    #print(f"Feeding DMA... stalled: {is_pio_stalled(0,0)}")
+    print(f"Feeding DMA\n\tbefore: ctrl reg = 0x{dma_ctrl(self.channel):08x}")
+
     configure_dma(
-      DMA_CHANNELS[self.channel],
+      channel= self.channel,
       read_addr = uctypes.addressof(self.buffer),
       write_addr = PIO0_TXF0,
-      transfer_count = 4, #2**20,
+      transfer_count = 2**20,
       ctrl = make_dma_ctrl(
         channel=self.channel,
         treq=DREQ_PIO0_TX0,
         enable=True,
         incr_read=True,
         incr_write=False,
-        ring_size_bits = 2,
+        ring_size_bits = 4,
+        data_size = 1,
         wrap_write_addrs = False,
       ),
     )
+    print(f"\tafter:  ctrl reg = 0x{dma_ctrl(self.channel):08x}")
 
 dma_handler = None
 
 def dma_display(buffer):
   global dma_handler
   dma_handler = Dma(channel=0, buffer=buffer)
-  #dma_handler.feed_dma()
+  dma_handler.feed_dma()
 
 def displayPio(sm0, bitmap):
   #print(f"Tx FIFO bytes: {sm0.tx_fifo()}")
@@ -450,23 +524,25 @@ def run_leds():
   output bit. When done, set latch high to output digit. 
   '''
   wrap_target()
-  set(pins, 1)
-  mov(y, status)
+  mov(y, status)    #.side(0b00)
   jmp(not_y, "start")
   irq(block, 0) # send irq and block until mp clears it. Needed since no DMA irqs in MP
+  set(pins, 1)
 
   label("start")
   mov(x, null)
   pull(block)
-  nop()              .side(0b00) # clear latch in prep for next set of data
   set(x, 11)                     # reset bit counter for 12 bits
+  nop()              .side(0b00) # clear latch in prep for next set of data
 
   label("loop")
-  out(pins, 1)       .side(0b00) [3]
-  jmp(x_dec, "loop") .side(0b10) [3]
+  out(pins, 1)       .side(0b00)
+  jmp(x_dec, "loop") .side(0b10)
 
-  nop()              .side(0b01) [3] # set latch high
+  nop()              .side(0b01) # set latch high
   set(pins, 0)
+  wrap()
+  return
   nop() [3]
   nop() [3]
   nop() [3]
@@ -542,7 +618,7 @@ if __name__ == '__main__':
   #shift_registers()
 
 
-  # pins = SR_DATA
+  # 
   # sideset = SR_LATCH, SR_CLK
 
   #shift_registers()
