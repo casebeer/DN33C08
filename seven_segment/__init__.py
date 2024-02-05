@@ -1,38 +1,24 @@
 
 import time
 from array import array
+import uctypes
 from machine import Pin
 from rp2 import PIO, StateMachine, asm_pio
 
-from dma import Dma, set_execctrl_status_sel
+#from dma import Dma, set_execctrl_status_sel
+import dma
 from .symbols import symbols
 
 SR_LATCH = 9  #SR0_RCLK
 SR_CLK   = 10 #SR0_SRCLK
 SR_DATA  = 11 #SR0_SER
 
-pio = False
-pio = True
-dma = False
-dma = True
-
-bitarray = array('I', [0] * 4)
-def shift_registers():
-  init_shift_registers()
-  run_display_demo()
+'''
 def init_shift_registers():
-
-  print(f"pio={pio} dma={dma}")
-
   # SR_LATCH = 9  #SR0_RCLK
   # SR_CLK   = 10 #SR0_SRCLK
   # SR_DATA  = 11 #SR0_SER
-  if pio:
-    pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(SR_DATA), Pin(25))
-  else:
-    pins = (inputs[7], inputs[6], inputs[5], Pin(25))
-  #pins = (inputs[7], inputs[6], inputs[5], Pin(25)) # leds only
-  #pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(25), Pin(4)) # flash data
+  pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(SR_DATA), Pin(25))
   sm0 = StateMachine(
     0,
     run_leds,
@@ -44,27 +30,28 @@ def init_shift_registers():
   sm0.restart()
   def irq_handler(sm):
     global dma_handler
-    if dma:
-      if dma_handler:
-        print(f"PIO IRQ: {sm.irq().flags()} put:{['{:012b}'.format(w) for w in dma_handler.buffer]}")
-        #sm.put(dma_handler.buffer)
-        #return
-        dma_handler.feed_dma()
-        #print(f"\tAfter IRQ dma feed: stalled: {is_pio_stalled(0,0)}")
-      else:
-        print("DMA handler not set up yet.")
+    if dma_handler:
+      print(f"PIO IRQ: {sm.irq().flags()} put:{['{:012b}'.format(w) for w in dma_handler.buffer]}")
+      #sm.put(dma_handler.buffer)
+      #return
+      dma_handler.feed_dma()
+      #print(f"\tAfter IRQ dma feed: stalled: {is_pio_stalled(0,0)}")
     else:
-      print(f"PIO IRQ: {sm.irq().flags()} put:{['{:012b}'.format(w) for w in bitarray]}")
-      sm.put(bitarray)
-      return
+      print("DMA handler not set up yet.")
 
   # Have MOV x, STATUS trigger when TX FIFO has < 1 items left
   set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=2)
   sm0.irq(handler=irq_handler)
   sm0.active(1)
+'''
 
-def run_display_demo():
-  global bitarray
+#def run_display_demo():
+def shift_registers():
+  pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(SR_DATA), Pin(25))
+  display = Display(*pins)
+  #init_shift_registers()
+  #run_display_demo()
+
   # 7-segment digits
   # left to right, active LOW
   digit1 = 0b0111
@@ -82,10 +69,6 @@ def run_display_demo():
   # five char buffer, but we only show leftmost four, and use final char
   # as a lookahead so we can merge '.' characters into the previous char
   chars = [0, 0, 0, 0, 0]
-
-  #display(digit4 | symbols['9'])
-  #displayPio(sm0, digit4 | symbols['9'])
-  #return
 
   # loop the 'alnum' message forever
   for char in repeat(alnum.lower()): # + " " * 4):
@@ -121,31 +104,11 @@ def run_display_demo():
     arr = array('H', buffer)
     print(arr)
     print(len(arr))
-    bitarray = arr
 
     # push the new bits out to the shift registers
-    if pio and dma:
-      start = time.ticks_ms()
-      while time.ticks_diff(time.ticks_ms(), start) < 100:
-        dma_display(bitarray)
-        #for bits in buffer:
-        #    sm0.put(bits)
-        break
-      time.sleep_ms(250)
-    else:
-      start = time.ticks_ms()
-      while time.ticks_diff(time.ticks_ms(), start) < 500:
-        if pio:
-          #sm0.put(arr)
-          #print(f'loop put: {arr}')
-          #sm0.put(bitarray)
-          continue
-        for bits in bitarray:
-          if pio:
-            #displayPio(sm0, bits)
-            sm0.put(bits)
-          else:
-            display(bits)
+    #dma_display(arr)
+    display.update(arr)
+    time.sleep_ms(250)
 
 @asm_pio(
   out_init=PIO.OUT_LOW,
@@ -179,70 +142,104 @@ def run_leds():
   nop()              .side(0b01) # set latch high
   set(pins, 0)
   wrap()
-  return
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  nop() [3]
-  wrap()
 
-class Display(object):
+class Display():
+  state_machine_frequency = 125000 # 1908
   def __init__(self, latch, clock, data, status):
-    self.dma_handler = None
+    #self.dma_handler = None
+    self.sm = None
+    self.message = None
+
+    self.latch = latch
+    self.clock = clock
+    self.data = data
+    self.status = status
+
+    # TODO: configure
+    self.pio_id = 0
+    self.state_machine_id = 0
+    self.dma_channel_id = 0
+
+    self.init_state_machine()
+
+  def init_state_machine(self):
+    '''
+    Configure the PIO state machine
+    '''
+    self.sm = StateMachine(
+      self.state_machine_id,
+      run_leds,
+      freq=self.state_machine_frequency,
+      set_base=self.status, #pins[3], # led #pins[0], # latch
+      sideset_base=self.latch, #pins[0],
+      out_base=self.data, #pins[2],
+    )
+    self.sm.restart()
+
+    # TODO: implement DMA interrupts
+    # Since Micropython doesn't support DMA interrupts, we need
+    # our PIO script manually trigger a PIO interrupt based on
+    # checking the TX FIFO buffer's remaining transfers using
+    # `MOV x, STATUS`. Configure EXECCTRL to support this for our
+    # state machine here:
+
+    # trigger `MOV x, STATUS` on TX FIFO
+    dma.Pio(self.pio_id).StateMachine(self.state_machine_id)\
+      .ExecCtrl().set_status_sel(rx_fifo=False)
+
+    # trigger `MOV x, STATUS` when < 2 transfers remain
+    dma.Pio(self.pio_id).StateMachine(self.state_machine_id)\
+      .ExecCtrl().set_status_n(level=2)
+
+    self.sm.irq(handler=self.update_dma)
+    self.sm.active(1)
+
   def update(self, message):
-    self.dma_handler = dma_display(buffer)
-  def clear(self):
-    pass
-  def handle_irq(self):
-    if self.dma_handler:
-      self.dma_handler.feed_dma()
+    '''
+    Set the displayed message
 
-def display(bitmap):
-  sr_latch.off()
-  sr_data.off()
-  for data in bits(bitmap):
-    sr_clk.off()
-    sr_data.value(data)
-    #print(f"{data}: {sr_data.value()} {sr_clk.value()}")
+    `message` must be a serialized 
+    '''
+    self.message = message
+    self.update_dma()
+    #self.dma_handler = Dma(channel=self.dma_channel, buffer=message)
+    #self.dma_handler.feed_dma()
 
-    #time.sleep_ms(500)
-    sr_clk.on()
-    #print(f"{i}: {sr_data.value()} {sr_clk.value()}")
+  def update_dma(self):
+    '''
+    Update the DMA channel's config and trigger transfers to start
 
-    #time.sleep_ms(500)
-  sr_latch.on()
-  #sr_output_enable.on()
+    This method is used both to initially configure DMA and to reset
+    the DMA channel in the interrupt handler.
+    '''
+    #if self.dma_handler:
+    #  self.dma_handler.feed_dma()
+    # TODO: find free DMA channel
+    dma_channel = dma.Channel(self.dma_channel_id)
+    dma_channel.configure(
+      read_addr = uctypes.addressof(self.message),
+      write_addr = dma.addresses.Pio(0).tx_fifo(0), #PIO0_TXF0, # Pio(0).tx_fifo(0),
+      transfer_count = 2**20,
+      ctrl = dma.Ctrl(
+        channel_id = dma_channel.channel_id,
+        treq=dma.addresses.Dreq().Pio(0).tx_fifo(0), # DREQ_PIO0_TX0, # Dreq().Pio(0).tx_fifo(0)
+        enable=True,
+        incr_read=True,
+        incr_write=False,
+        ring_size_bits = 4,
+        data_size = 1,
+        wrap_write_addrs = False,
+      ).value(),
+    )
+    print(f"\tafter:  ctrl reg = 0x{dma_channel.get_ctrl():08x}")
 
-dma_handler = None
-
-def dma_display(buffer):
-  global dma_handler
-  dma_handler = Dma(channel=0, buffer=buffer)
-  dma_handler.feed_dma()
-  return dma_handler
-
-def displayPio(sm0, bitmap):
-  #print(f"Tx FIFO bytes: {sm0.tx_fifo()}")
-  sm0.put(bitmap)
-  #time.sleep(1)
-  #sm0.put(array('H', [bitmap]))
-  #sm0.put(array('H', [bitmap] * 400))
+#dma_handler = None
+#
+#def dma_display(buffer):
+#  global dma_handler
+#  dma_handler = Dma(channel=0, buffer=buffer)
+#  dma_handler.feed_dma()
+#  return dma_handler
 
 # tx fifo 4x 32 bit
 # rx fifo 4x 32 bit

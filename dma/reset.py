@@ -1,0 +1,22 @@
+
+from machine import mem32
+
+SUBSYSTEM_RESET_BASE = 0x4000c000
+SUBSYSTEM_RESET_OFFSET = 0
+SUBSYSTEM_RESET_DONE_OFFSET = 8
+
+SUBSYSTEM_RESET = SUBSYSTEM_RESET_BASE + SUBSYSTEM_RESET_OFFSET
+SUBSYSTEM_RESET_DONE = SUBSYSTEM_RESET_BASE + SUBSYSTEM_RESET_DONE_OFFSET
+
+SUBSYSTEM_RESET_BIT_DMA = 2
+SUBSYSTEM_RESET_BIT_PIO0 = 10
+SUBSYSTEM_RESET_BIT_PIO1 = 11
+
+def reset_dma_subsystem():
+  '''Reset the DMA subsystem'''
+  print("Resetting DMA subsystem...")
+  dma_mask = 1 << SUBSYSTEM_RESET_BIT_DMA
+  mem32[SUBSYSTEM_RESET] |= dma_mask
+  while mem32[SUBSYSTEM_RESET_DONE] & dma_mask:
+    print(f"Waiting for DMA subsystem to reset... {mem32[SUBSYSTEM_RESET_DONE]:08x}")
+
