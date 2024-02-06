@@ -4,6 +4,7 @@ from array import array
 import uctypes
 import machine
 from machine import Pin
+import rp2
 from rp2 import PIO, StateMachine, asm_pio
 import micropython
 micropython.alloc_emergency_exception_buf(100)
@@ -129,14 +130,17 @@ def run_leds():
   output bit. When done, set latch high to output digit.
   '''
   wrap_target()
-  #set(pins, 1)
-  mov(y, status)    #.side(0b00)
-  jmp(not_y, "start")
-  set(pins, 1)
-  irq(block, 0) # send irq and block until mp clears it. Needed since no DMA irqs in MP
 
-  label("start")
-  set(pins, 0)
+  ### trigger PIO IRQ when TX FIFO is low
+  ### requires setting EXECCTL correctly
+  ### superseded by DMA IRQs in new Micropython version
+  #mov(y, status)    #.side(0b00)
+  #jmp(not_y, "start")
+  #set(pins, 1)
+  #irq(block, 0) # send irq and block until mp clears it. Needed since no DMA irqs in MP
+  #label("start")
+  #set(pins, 0)
+
   mov(x, null)
   pull(block)
   set(x, 11)                     # reset bit counter for 12 bits
@@ -148,9 +152,6 @@ def run_leds():
 
   nop()              .side(0b01) # set latch high
   wrap()
-
-def isr(arg):
-  print(f"in isr function {arg}")
 
 class Display():
   state_machine_frequency = 125000 # 1908
@@ -166,7 +167,6 @@ class Display():
     self.status = status
 
     self.retrigger_count = 0
-    self.retriggered = False
 
     # TODO: configure
     self.pio_id = 0
@@ -174,6 +174,7 @@ class Display():
     self.dma_channel_id = 0
 
     self.init_state_machine()
+    self.init_dma()
 
   def init_state_machine(self):
     '''
@@ -207,11 +208,14 @@ class Display():
     # Have MOV x, STATUS trigger when TX FIFO has < 1 items left
     #dma.pio.set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=2)
 
-    self.sm.irq(handler=self.update_dma)
+    #self.sm.irq(handler=self.update_dma)
     #PIO(0).irq(lambda pio: print("PIO IRQ", pio.irq().flags()))
     #self.sm.irq(handler=lambda arg: print("SM IRQ", arg))
     #self.sm.irq(handler=isr)
     self.sm.active(1)
+  def init_dma(self):
+    self.dma = rp2.DMA()
+    self.dma.irq(self.update_dma)
 
   def update(self, message):
     '''
@@ -223,9 +227,8 @@ class Display():
     self.message = message
     machine.enable_irq(state)
 
-    print(f"New message '{message}'. Previous message retriggered ({self.retriggered}) {self.retrigger_count} times")
-    self.retrigger_count = -1 
-    self.retriggered = False
+    print(f"New message '{message}'. Previous message retriggered {self.retrigger_count} times")
+    self.retrigger_count = 0 
     
     # TODO: find free DMA channel
     self.dma_channel = dma.Channel(self.dma_channel_id)
@@ -233,7 +236,7 @@ class Display():
     self.dma_config = {
       'read_addr': uctypes.addressof(self.message),
       'write_addr': dma.addresses.Pio(0).tx_fifo(0), #PIO0_TXF0, # Pio(0).tx_fifo(0),
-      'transfer_count': 2**5, #2**20,
+      'transfer_count': 2**5,
       'ctrl': dma.Ctrl(
         channel_id = 0, #self.dma_channel.channel_id,
         treq = dma.addresses.Dreq().Pio(0).tx_fifo(0), # DREQ_PIO0_TX0, # Dreq().Pio(0).tx_fifo(0)
@@ -266,7 +269,6 @@ class Display():
     '''
     #print(f"\tISR! {isr_arg}")
     self.dma_channel.configure(**self.dma_config)
-    self.retriggered = True
     self.retrigger_count += 1
     #print(f"\tafter:  ctrl reg = {self.dma_channel.get_ctrl():32b}")
 
