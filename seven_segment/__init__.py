@@ -18,44 +18,10 @@ SR_LATCH = 9  #SR0_RCLK
 SR_CLK   = 10 #SR0_SRCLK
 SR_DATA  = 11 #SR0_SER
 
-'''
-def init_shift_registers():
-  # SR_LATCH = 9  #SR0_RCLK
-  # SR_CLK   = 10 #SR0_SRCLK
-  # SR_DATA  = 11 #SR0_SER
-  pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(SR_DATA), Pin(25))
-  sm0 = StateMachine(
-    0,
-    run_leds,
-    freq=125000, #1908,
-    set_base=pins[3], # led #pins[0], # latch
-    sideset_base=pins[0],
-    out_base=pins[2],
-  )
-  sm0.restart()
-  def irq_handler(sm):
-    global dma_handler
-    if dma_handler:
-      print(f"PIO IRQ: {sm.irq().flags()} put:{['{:012b}'.format(w) for w in dma_handler.buffer]}")
-      #sm.put(dma_handler.buffer)
-      #return
-      dma_handler.feed_dma()
-      #print(f"\tAfter IRQ dma feed: stalled: {is_pio_stalled(0,0)}")
-    else:
-      print("DMA handler not set up yet.")
-
-  # Have MOV x, STATUS trigger when TX FIFO has < 1 items left
-  set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=2)
-  sm0.irq(handler=irq_handler)
-  sm0.active(1)
-'''
-
-#def run_display_demo():
 def shift_registers():
   pins = (Pin(SR_LATCH), Pin(SR_CLK), Pin(SR_DATA), Pin(25))
+
   display = Display(*pins)
-  #init_shift_registers()
-  #run_display_demo()
 
   # 7-segment digits
   # left to right, active LOW
@@ -113,8 +79,8 @@ def shift_registers():
     # push the new bits out to the shift registers
     #dma_display(arr)
     display.update(arr)
-    #time.sleep_ms(250)
-    time.sleep_ms(1000)
+    time.sleep_ms(250)
+    #time.sleep_ms(1000)
 
 @asm_pio(
   out_init=PIO.OUT_LOW,
@@ -154,7 +120,7 @@ def run_leds():
   wrap()
 
 class Display():
-  state_machine_frequency = 125000 # 1908
+  state_machine_frequency = 125000 # int(50e6) # 1908 minimum
   def __init__(self, latch, clock, data, status):
     self.dma_channel = None
     self.dma_config = {}
@@ -189,30 +155,8 @@ class Display():
       out_base=self.data, #pins[2],
     )
     self.sm.restart()
-
-    # TODO: implement DMA interrupts
-    # Since Micropython doesn't support DMA interrupts, we need
-    # our PIO script manually trigger a PIO interrupt based on
-    # checking the TX FIFO buffer's remaining transfers using
-    # `MOV x, STATUS`. Configure EXECCTRL to support this for our
-    # state machine here:
-
-    # trigger `MOV x, STATUS` on TX FIFO
-    dma.Pio(self.pio_id).StateMachine(self.state_machine_id)\
-      .ExecCtrl().set_status_sel(rx_fifo=False)
-
-    # trigger `MOV x, STATUS` when < 2 transfers remain
-    dma.Pio(self.pio_id).StateMachine(self.state_machine_id)\
-      .ExecCtrl().set_status_n(level=2)
-
-    # Have MOV x, STATUS trigger when TX FIFO has < 1 items left
-    #dma.pio.set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=2)
-
-    #self.sm.irq(handler=self.update_dma)
-    #PIO(0).irq(lambda pio: print("PIO IRQ", pio.irq().flags()))
-    #self.sm.irq(handler=lambda arg: print("SM IRQ", arg))
-    #self.sm.irq(handler=isr)
     self.sm.active(1)
+
   def init_dma(self):
     self.dma = rp2.DMA()
     self.dma.irq(self.update_dma)
@@ -228,12 +172,30 @@ class Display():
     machine.enable_irq(state)
 
     print(f"New message '{message}'. Previous message retriggered {self.retrigger_count} times")
-    self.retrigger_count = 0 
-    
+    self.retrigger_count = -1
+
     # TODO: find free DMA channel
-    self.dma_channel = dma.Channel(self.dma_channel_id)
+    #self.dma_channel = dma.Channel(self.dma_channel_id)
     # set all config values here so we don't have to allocate in the ISR
+    #
     self.dma_config = {
+      'read': uctypes.addressof(self.message),
+      'write': dma.addresses.Pio(0).tx_fifo(0),
+      'count': 2**20,
+      'ctrl': self.dma.pack_ctrl(
+        treq_sel = dma.addresses.Dreq().Pio(0).tx_fifo(0), # DREQ_PIO0_TX0, # Dreq().Pio(0).tx_fifo(0)
+        enable = True,
+        irq_quiet = False, # we're using DMA IRQs to re-trigger DMA
+        inc_read = True,
+        inc_write = False,
+        size = 1, # 0=byte, 1=half word, 2=word (default: 2)
+        ring_size = 4, # bits
+        ring_sel = False, # ``False`` to have the ``ring_size`` apply to the read address or ``True`` to apply to the write address.
+      ),
+      'trigger': True,
+    }
+
+    self.dma_config_old = {
       'read_addr': uctypes.addressof(self.message),
       'write_addr': dma.addresses.Pio(0).tx_fifo(0), #PIO0_TXF0, # Pio(0).tx_fifo(0),
       'transfer_count': 2**5,
@@ -248,13 +210,17 @@ class Display():
         wrap_write_addrs = False,
       ).value(),
     }
-    #self.update_dma()
-    self.dma_channel.configure(**self.dma_config)
+    # IMPORTANT: must abort dma channel if it's active already
+    if self.dma.active():
+      self.dma.active(False)
+    self.update_dma()
+    #self.dma_channel.configure(**self.dma_config_old)
+    #self.dma.config(**self.dma_config)
 
     #self.dma_handler = Dma(channel=self.dma_channel, buffer=message)
     #self.dma_handler.feed_dma()
 
-  def update_dma(self, isr_arg):
+  def update_dma(self, isr_arg=None):
     '''
     Update the DMA channel's config and trigger transfers to start
 
@@ -268,7 +234,10 @@ class Display():
     https://docs.micropython.org/en/latest/reference/isr_rules.html
     '''
     #print(f"\tISR! {isr_arg}")
-    self.dma_channel.configure(**self.dma_config)
+    #self.dma_channel.configure(**self.dma_config_old)
+
+    self.dma.config(**self.dma_config)
+
     self.retrigger_count += 1
     #print(f"\tafter:  ctrl reg = {self.dma_channel.get_ctrl():32b}")
 
