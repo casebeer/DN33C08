@@ -45,15 +45,15 @@ class PioBase():
   RX_INCREMENT = 4
   def __init__(self, pio_id):
     self.pio_id = int(pio_id)
-  def addr(self):
+  def address(self):
     '''Return base address of this PIO's registers'''
     return self.PIO_BASE[self.pio_id]
   def tx_fifo(self, num):
     '''Return address of specified TX FIFO'''
-    return self.addr() + self.TX_F0 + int(num) * self.TX_INCREMENT
+    return self.address() + self.TX_F0 + int(num) * self.TX_INCREMENT
   def rx_fifo(self, num):
     '''Return address of specified RX FIFO'''
-    return self.addr() + self.RX_F0 + int(num) * self.RX_INCREMENT
+    return self.address() + self.RX_F0 + int(num) * self.RX_INCREMENT
 
 class Pio(PioBase):
   '''
@@ -68,7 +68,8 @@ class Pio(PioBase):
     Return the address of the EXECCTRL register for the specified
     state machine
     '''
-    return self.SM0_EXECCTRL + num * self.EXECCTRL_INCREMENT
+    return self.address() + self.SM0_EXECCTRL \
+      + num * self.EXECCTRL_INCREMENT
 
 class Dreq():
   '''

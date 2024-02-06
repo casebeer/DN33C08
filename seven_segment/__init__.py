@@ -2,11 +2,15 @@
 import time
 from array import array
 import uctypes
+import machine
 from machine import Pin
 from rp2 import PIO, StateMachine, asm_pio
+import micropython
+micropython.alloc_emergency_exception_buf(100)
 
 #from dma import Dma, set_execctrl_status_sel
 import dma
+import dma.pio
 from .symbols import symbols
 
 SR_LATCH = 9  #SR0_RCLK
@@ -108,7 +112,8 @@ def shift_registers():
     # push the new bits out to the shift registers
     #dma_display(arr)
     display.update(arr)
-    time.sleep_ms(250)
+    #time.sleep_ms(250)
+    time.sleep_ms(1000)
 
 @asm_pio(
   out_init=PIO.OUT_LOW,
@@ -124,12 +129,14 @@ def run_leds():
   output bit. When done, set latch high to output digit.
   '''
   wrap_target()
+  #set(pins, 1)
   mov(y, status)    #.side(0b00)
   jmp(not_y, "start")
-  irq(block, 0) # send irq and block until mp clears it. Needed since no DMA irqs in MP
   set(pins, 1)
+  irq(block, 0) # send irq and block until mp clears it. Needed since no DMA irqs in MP
 
   label("start")
+  set(pins, 0)
   mov(x, null)
   pull(block)
   set(x, 11)                     # reset bit counter for 12 bits
@@ -140,13 +147,16 @@ def run_leds():
   jmp(x_dec, "loop") .side(0b10)
 
   nop()              .side(0b01) # set latch high
-  set(pins, 0)
   wrap()
+
+def isr(arg):
+  print(f"in isr function {arg}")
 
 class Display():
   state_machine_frequency = 125000 # 1908
   def __init__(self, latch, clock, data, status):
-    #self.dma_handler = None
+    self.dma_channel = None
+    self.dma_config = {}
     self.sm = None
     self.message = None
 
@@ -154,6 +164,9 @@ class Display():
     self.clock = clock
     self.data = data
     self.status = status
+
+    self.retrigger_count = 0
+    self.retriggered = False
 
     # TODO: configure
     self.pio_id = 0
@@ -191,7 +204,13 @@ class Display():
     dma.Pio(self.pio_id).StateMachine(self.state_machine_id)\
       .ExecCtrl().set_status_n(level=2)
 
+    # Have MOV x, STATUS trigger when TX FIFO has < 1 items left
+    #dma.pio.set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=2)
+
     self.sm.irq(handler=self.update_dma)
+    #PIO(0).irq(lambda pio: print("PIO IRQ", pio.irq().flags()))
+    #self.sm.irq(handler=lambda arg: print("SM IRQ", arg))
+    #self.sm.irq(handler=isr)
     self.sm.active(1)
 
   def update(self, message):
@@ -200,38 +219,56 @@ class Display():
 
     `message` must be a serialized 
     '''
+    state = machine.disable_irq()
     self.message = message
-    self.update_dma()
+    machine.enable_irq(state)
+
+    print(f"New message '{message}'. Previous message retriggered ({self.retriggered}) {self.retrigger_count} times")
+    self.retrigger_count = -1 
+    self.retriggered = False
+    
+    # TODO: find free DMA channel
+    self.dma_channel = dma.Channel(self.dma_channel_id)
+    # set all config values here so we don't have to allocate in the ISR
+    self.dma_config = {
+      'read_addr': uctypes.addressof(self.message),
+      'write_addr': dma.addresses.Pio(0).tx_fifo(0), #PIO0_TXF0, # Pio(0).tx_fifo(0),
+      'transfer_count': 2**5, #2**20,
+      'ctrl': dma.Ctrl(
+        channel_id = 0, #self.dma_channel.channel_id,
+        treq = dma.addresses.Dreq().Pio(0).tx_fifo(0), # DREQ_PIO0_TX0, # Dreq().Pio(0).tx_fifo(0)
+        enable = True,
+        incr_read = True,
+        incr_write = False,
+        ring_size_bits = 4,
+        data_size = 1,
+        wrap_write_addrs = False,
+      ).value(),
+    }
+    #self.update_dma()
+    self.dma_channel.configure(**self.dma_config)
+
     #self.dma_handler = Dma(channel=self.dma_channel, buffer=message)
     #self.dma_handler.feed_dma()
 
-  def update_dma(self):
+  def update_dma(self, isr_arg):
     '''
     Update the DMA channel's config and trigger transfers to start
 
     This method is used both to initially configure DMA and to reset
     the DMA channel in the interrupt handler.
+
+    Note that since this is an interrupt handler, we can't allocate
+    and we want to minimize time spent, so precompute as much as
+    possible.
+
+    https://docs.micropython.org/en/latest/reference/isr_rules.html
     '''
-    #if self.dma_handler:
-    #  self.dma_handler.feed_dma()
-    # TODO: find free DMA channel
-    dma_channel = dma.Channel(self.dma_channel_id)
-    dma_channel.configure(
-      read_addr = uctypes.addressof(self.message),
-      write_addr = dma.addresses.Pio(0).tx_fifo(0), #PIO0_TXF0, # Pio(0).tx_fifo(0),
-      transfer_count = 2**20,
-      ctrl = dma.Ctrl(
-        channel_id = dma_channel.channel_id,
-        treq=dma.addresses.Dreq().Pio(0).tx_fifo(0), # DREQ_PIO0_TX0, # Dreq().Pio(0).tx_fifo(0)
-        enable=True,
-        incr_read=True,
-        incr_write=False,
-        ring_size_bits = 4,
-        data_size = 1,
-        wrap_write_addrs = False,
-      ).value(),
-    )
-    print(f"\tafter:  ctrl reg = 0x{dma_channel.get_ctrl():08x}")
+    #print(f"\tISR! {isr_arg}")
+    self.dma_channel.configure(**self.dma_config)
+    self.retriggered = True
+    self.retrigger_count += 1
+    #print(f"\tafter:  ctrl reg = {self.dma_channel.get_ctrl():32b}")
 
 #dma_handler = None
 #

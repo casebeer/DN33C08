@@ -15,16 +15,34 @@ EXECCTRL_EXEC_STALLED = 31
 EXECCTRL_STATUS_SEL = 4 # 0 = TX FIFO, 1 = RX FIFO. MOV x, STATUS  will be All-ones if FIFO level < N, otherwise all-zeroes
 EXECCTRL_STATUS_N = 0 # 4 bits, 3–0. FIFO level below which STATUS_SEL should be true
 
-#def set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=1):
-#  reg = PIO_BASE[pio] + SM_EXECCTRL_OFFSET[stateMachine]
-#  reg_mask = (1 << EXECCTRL_STATUS_SEL) | (0xf << EXECCTRL_STATUS_N)
-#
-#  ctrl = 0
-#  ctrl |= int(rxFifo) << EXECCTRL_STATUS_SEL # 0 = tx, 1 = rx
-#  ctrl |= (1 & 0xf) << EXECCTRL_STATUS_N # 0 bit shift
-#
-#  mem32[reg] &= ~reg_mask # clear bit we're going to set
-#  mem32[reg] |= ctrl # set bits
+PIO_BASE = dma.addresses.Pio.PIO_BASE
+
+def set_execctrl_status_sel(pio=0, stateMachine=0, rxFifo=False, level=1):
+  reg = PIO_BASE[pio] + SM_EXECCTRL_OFFSET[stateMachine]
+  reg_mask = (1 << EXECCTRL_STATUS_SEL) | (0xf << EXECCTRL_STATUS_N)
+
+  ctrl = 0
+  ctrl |= int(rxFifo) << EXECCTRL_STATUS_SEL # 0 = tx, 1 = rx
+  ctrl |= (1 & 0xf) << EXECCTRL_STATUS_N # 0 bit shift
+
+  print(f'EXECCTRL: reg = 0x{reg:08x}')
+  print(f'EXECCTRL: before = 0x{mem32[reg]:08x}')
+
+  mem32[reg] &= ~reg_mask # clear bit we're going to set
+  mem32[reg] |= ctrl # set bits
+
+  print(f'EXECCTRL: after = 0x{mem32[reg]:08x}')
+
+def test_execctrl():
+  #before = 0x4001fa00
+  expected_register_address = 0x502000cc
+  expected_register_value = 0x4001fa01
+
+  #BAD
+  # ExecCtrl: reg = 0x000000cc
+  # ExecCtrl: after= 0x01cc4653
+  # ExecCtrl: reg = 0x000000cc
+  # ExecCtrl: after= 0x01cc4653
 
 #def is_pio_stalled(pio=0, stateMachine=0):
 #  reg = PIO_BASE[pio] + SM_EXECCTRL_OFFSET[stateMachine]
@@ -70,6 +88,7 @@ class Pio():
         all zeroes.
         '''
         reg = self.address()
+        print(f'ExecCtrl: reg = 0x{reg:08x}')
         reg_mask = (1 << EXECCTRL_STATUS_SEL)
 
         ctrl = 0
@@ -77,7 +96,7 @@ class Pio():
 
         mem32[reg] &= ~reg_mask # clear bit we're going to set
         mem32[reg] |= ctrl # set bits
-        pass
+        print(f'ExecCtrl: after= 0x{mem32[reg]:08x}')
 
       def set_status_n(self, level=1):
         '''
@@ -85,10 +104,12 @@ class Pio():
         4 bit integer.
         '''
         reg = self.address()
+        print(f'ExecCtrl: reg = 0x{reg:08x}')
         reg_mask = (0xf << EXECCTRL_STATUS_N)
         ctrl = 0
         ctrl |= (1 & 0xf) << EXECCTRL_STATUS_N # 0 bit shift
 
         mem32[reg] &= ~reg_mask # clear bit we're going to set
         mem32[reg] |= ctrl # set bits
+        print(f'ExecCtrl: after= 0x{mem32[reg]:08x}')
 
