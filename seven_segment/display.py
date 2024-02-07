@@ -1,23 +1,23 @@
 
 import time
-from array import array
 import uctypes
 import machine
 from machine import Pin
 import rp2
 from rp2 import PIO, StateMachine, asm_pio
 import micropython
-micropython.alloc_emergency_exception_buf(100)
 
 #from dma import Dma, set_execctrl_status_sel
 import dma
 import dma.pio
-from .symbols import symbols
+
+from .serializer import Serializer
+
+micropython.alloc_emergency_exception_buf(100)
 
 # Set to the number of bits to shift per latch pin cycle.
 # Overridden by passing pull_thresh to StateMachine.init call.
 SHIFT_REGISTER_BITS_DEFAULT=12
-MISSING_SYMBOL_REPLACEMENT = '-'
 
 @asm_pio(
   out_init=PIO.OUT_LOW,
@@ -88,6 +88,7 @@ class Display():
     self.dma_config = {}
     self.sm = None
     self.buffer = None
+    self.serializer = Serializer()
 
     self.latch = latch
     self.clock = clock
@@ -111,7 +112,7 @@ class Display():
     on the 7-segment display. Will truncate the message
     to the size of the display.
     '''
-    self.update_raw(self.Serializer.serialize(text))
+    self.update_raw(self.serializer.serialize(text))
 
   def scroll_message(self, text, loop=True, framerate=4, lead_in=True):
     '''
@@ -128,104 +129,9 @@ class Display():
       message = repeat(message)
 
     # potentially infinite loop
-    for buffer in self.Serializer.scroll(message, lead_in):
+    for buffer in self.serializer.scroll(message, lead_in):
       self.update_raw(buffer)
       time.sleep(1./framerate)
-
-  class Serializer():
-    '''
-    Serializer for DN22C08's 8-segment LED shift registers
-    '''
-    # 7-segment digits
-    # left to right, active LOW
-    digit1 = 0b0111
-    digit2 = 0b1011
-    digit3 = 0b1101
-    digit4 = 0b1110
-
-    digits = [ digit1, digit2, digit3, digit4 ]
-
-    dot_symbol = symbols.get('.', 0)
-
-    @classmethod
-    def symbolize(cls, text):
-      '''Convert a string into an generator of symbol ints'''
-      return cls.merge_dots(
-        symbols.get(char.lower(), symbols.get(MISSING_SYMBOL_REPLACEMENT, 0))
-          for char in text)
-
-    @classmethod
-    def merge_dots(cls, symbols):
-      '''
-      Generator to merge dot ('.') symbols into the previous digit's
-      symbol. Use for 8-segment displays with dedicated dot segments.
-
-      Accepts an iterable of symbol ints and returns a generator of
-      symbol ints.
-      '''
-      if cls.dot_symbol == 0:
-        # no dot symbol defined, skip this
-        return
-
-      symbol = None
-      it = iter(symbols)
-      previous = next(it)
-      for symbol in it:
-        if symbol == cls.dot_symbol:
-          if previous & cls.dot_symbol == 0:
-            # only merge if previous wasn't another dot or dotted char!
-            previous = previous | cls.dot_symbol
-            symbol = None
-        if previous is not None:
-          #print(previous)
-          yield previous
-        previous = symbol
-      if symbol is not None:
-        #print(f"symbol: {symbol}")
-        yield symbol
-
-    @classmethod
-    def serialize(cls, text):
-      '''
-      Convert a string into a list of serialized digit
-      bit-representations for charlieplexing
-      '''
-      return cls.render(cls.symbolize(text))
-
-    # TODO: scroll direction
-    @classmethod
-    def scroll(cls, text, lead_in=True):
-      '''
-      Generator returning a sequence of lists of serialized digit
-      bit-representations for charlieplexing.
-      '''
-      buf = []
-
-      if lead_in:
-        buf = [0, 0, 0, 0]
-
-      symbolized = cls.symbolize(text)
-
-      for symbol in symbolized:
-        buf.append(symbol)
-        buf = buf[-4:] # keep only the last 4 chars
-
-        yield cls.render(buf)
-
-    @classmethod
-    def render(cls, symbol_list):
-      '''
-      Render a list of symbols to the display's digits
-      
-      Concatenate each symbol's 8 bits (active HIGH, which LED segments
-      to light) with 4 bits indicating which of the four digits to light
-      (active LOW).
-      '''
-      buffer = [ d | c for d, c in zip(cls.digits, symbol_list) ]
-
-      # The TX FIFO handles 32-bit words ('L'); we're using one word per
-      # displayed digit, even though we only need 12 of the 32 bits.
-      return array('L', buffer)
 
   def init_state_machine(self):
     '''Configure the PIO state machine'''
