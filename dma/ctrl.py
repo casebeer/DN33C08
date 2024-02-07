@@ -91,11 +91,17 @@ class RegisterField():
   '''
   Metadata and access helpers for fields within 32-bit bitfield registers
   '''
-  def __init__(self, bit_position:int, bit_size:int=1, type_:type=int):
+  def __init__(self, bit_position:int, bit_size:int=1, type_:type=None):
     self.bit_position = uint32(bit_position)
     self.bit_size = uint32(bit_size)
     self.public_name = None
-    self.type_ = type_
+    if type_ is not None:
+      self.type_ = type_
+    else:
+      if self.bit_size == 1:  
+        self.type_ = bool
+      else:
+        self.type_ = int
   def bitmask(self):
     '''Bitmask for this field'''
     return uint32(~(0xfffffffe << (self.bit_size - 1)) << self.bit_position)
@@ -107,7 +113,7 @@ class RegisterField():
     obj.register_value &= ~self.bitmask()
     obj.register_value |= (uint32(value) << self.bit_position) & self.bitmask()
   def __repr__(self):
-    return f"RegisterField({self.bit_size} bit {self.type_.__name__} @ bit {self.bit_position})"
+    return f"RegisterField({'' if self.bit_size == 1 else f'{self.bit_size} bit '}{self.type_.__name__} @ bit {self.bit_position})"
 
 class Alias():
   def __init__(self, target):
@@ -170,19 +176,19 @@ class CtrlRegister(BitfieldRegister):
   '''
   Wrapper for bitfields within the DMA CTRL registers
   '''
-  busy = RegisterField(24, type_=bool)
-  sniff_en = RegisterField(23, type_=bool)
-  bswap = RegisterField(22, type_=bool)
-  irq_quiet = RegisterField(21, type_=bool)
+  busy = RegisterField(24)
+  sniff_en = RegisterField(23)
+  bswap = RegisterField(22)
+  irq_quiet = RegisterField(21)
   treq_sel = RegisterField(15, 6)
   chain_to = RegisterField(11, 4)
-  ring_sel = RegisterField(10, type_=bool) # False => wrap reads; True => wrap writes
+  ring_sel = RegisterField(10) # False => wrap reads; True => wrap writes
   ring_size = RegisterField(6, 4)
-  incr_write = RegisterField(5, type_=bool)
-  incr_read = RegisterField(4, type_=bool)
+  incr_write = RegisterField(5)
+  incr_read = RegisterField(4)
   data_size = RegisterField(2, 2)
-  high_priority = RegisterField(1, type_=bool)
-  en = RegisterField(0, type_=bool)
+  high_priority = RegisterField(1)
+  en = RegisterField(0)
 
   enable = Alias('en')
   wrap_writes = Alias('ring_sel')
