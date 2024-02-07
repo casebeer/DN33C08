@@ -3,7 +3,7 @@
 # Pattern below, active HIGH
 #  _     8
 # |_|  6   7
-# |_|.   1 
+# |_|.   1
 #      5   2
 #        4  3
 #

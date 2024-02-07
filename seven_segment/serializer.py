@@ -16,8 +16,15 @@ class Serializer():
   digit3 = 0b1101
   digit4 = 0b1110
 
-  digits = [ digit1, digit2, digit3, digit4 ]
+  # Configure what bits to emit to activate each digit
+  # This implicitly defines the layout of the display, e.g number of
+  # digits, order of digits, etc.
+  digit_bit_patterns = [ digit1, digit2, digit3, digit4 ]
+  number_of_digits = len(digit_bit_patterns)
 
+  # For 8-segment displays, we want to special-case dots so we can merge
+  # them into the previous digit's dot-segment. Define the dot's symbol
+  # here. Set to 0 to disable dot-merging.
   dot_symbol = symbols.get('.', 0)
 
   def symbolize(self, text):
@@ -71,13 +78,13 @@ class Serializer():
     buf = []
 
     if lead_in:
-      buf = [0, 0, 0, 0]
+      buf = [0] * self.number_of_digits
 
     symbolized = self.symbolize(text)
 
     for symbol in symbolized:
       buf.append(symbol)
-      buf = buf[-4:] # keep only the last 4 chars
+      buf = buf[-self.number_of_digits:] # keep only the last 4 chars
 
       yield self.render(buf)
 
@@ -89,7 +96,7 @@ class Serializer():
     to light) with 4 bits indicating which of the four digits to light
     (active LOW).
     '''
-    buffer = [ d | c for d, c in zip(self.digits, symbol_list) ]
+    buffer = [ d | c for d, c in zip(self.digit_bit_patterns, symbol_list) ]
 
     # The TX FIFO handles 32-bit words ('L'); we're using one word per
     # displayed digit, even though we only need 12 of the 32 bits.
