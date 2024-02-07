@@ -68,7 +68,33 @@ MODBUS_DEVICE_ADDRESS = 1
 
 def main():
   pin_demos()
-  seven_segment.shift_registers()
+  shift_register_display_demo()
+
+def shift_register_display_demo():
+  '''Run demo on the 8-segement LED display'''
+  display = seven_segment.Display(
+    latch = Pin(SR_LATCH),
+    clock = Pin(SR_CLK),
+    data = Pin(SR_DATA),
+    status = Pin(25), # Pico built-in LED
+  )
+  display.message("3.141")
+  time.sleep(3)
+  display.scroll_message(counter(), loop=False, framerate=8)
+
+def counter(start=0):
+  '''
+  Generator producing a character stream of space-separated stringified
+  decimal numbers counting up from `start`.
+  '''
+  def helper():
+    n = start
+    while True:
+      yield f"{n} "
+      n += 1
+  for s in helper():
+    for c in s:
+      yield c
 
 def pin_demos():
   '''Configure input/output pin demo for DN33C08'''
