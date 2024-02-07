@@ -1,5 +1,7 @@
 
+import math
 import time
+import array
 import uctypes
 import machine
 from machine import Pin
@@ -159,8 +161,19 @@ class Display():
 
     You probably want Display.message() or Display.scroll() instead.
     '''
+    # buffer length * 4 since we're using one 32-bit word per displayed
+    # digit regardless of how many bits the digit actually uses
+    ring_size = math.ceil(math.log(len(buffer) * 4)/math.log(2))
+
+    # ring_size - 2 since we need the size in 32-bit words, not in bytes
+    ring = array.array('L',
+      list(n for _, n in zip(range(2 ** (ring_size - 2)), repeat(buffer))))
+
+    print(f"\tring_size {ring_size} bits for {len(ring) * 4} bytes / {len(ring)} words")
+    print(f"\t\t(originally {len(buffer) * 4} bytes / {len(buffer)} words)")
+
     state = machine.disable_irq()
-    self.buffer = buffer
+    self.buffer = ring
     machine.enable_irq(state)
 
     print(f"\tPrevious message retriggered DMA {self.retrigger_count} times")
@@ -178,8 +191,8 @@ class Display():
         irq_quiet = False, # we're using DMA IRQs to re-trigger DMA
         inc_read = True,
         inc_write = False,
-        size = 1, # 0=byte, 1=half word, 2=word (default: 2)
-        ring_size = 4, # bits
+        size = 2, # 0=byte, 1=half word, 2=word (default: 2)
+        ring_size = ring_size, # bits => 2 ** 4 _bytes_ per ring = len 4 array of 32 bit ints
         ring_sel = False, # ``False`` to have the ``ring_size`` apply to the read address or ``True`` to apply to the write address.
       ),
       'trigger': True,
@@ -197,8 +210,8 @@ class Display():
         enable = True,
         incr_read = True,
         incr_write = False,
-        ring_size_bits = 4,
-        data_size = 1,
+        ring_size_bits = ring_size,
+        data_size = 2,
         wrap_write_addrs = False,
       ).value(),
     }
